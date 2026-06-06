@@ -232,10 +232,21 @@
   //   - enable the whole gate palette (menuGrey 0 = available, 1 = greyed).
   // qCompare expects output == original input, so a bare wire wins trivially;
   // the player can then drop gates in and watch the score react.
+  // Camera focus tile (board col,row the view centers on). quant1 pans from (5,4)
+  // for its wide puzzle; a fixed (9,2) centers our compact 2-line board so the
+  // wires line up with the A/B/C/D ports instead of drifting up-and-right.
+  var CAM_FX = 9, CAM_FY = 2;
+
   function loadScoredLevel(spec, goal) {
     SCENARIO.whichOne = "quant1";
-    InitScenario.load("quant1", false);          // native board + device + scoring
+    InitScenario.load("quant1", false);          // scenario config + device + scoring
     var C = FIELD.cols;
+
+    // PRISTINE quant1 board, independent of the player's saved "quant1" blueprint
+    // in localStorage (the engine restores PERSIST0[name].tiles/gates over the def
+    // on entry; building from the saved state corrupts the level). LevelGates()
+    // always returns the level's authored tiles/gates.
+    var def = LevelGates("quant1", false);
 
     // Constant streams: A = |0> (queue index 0 = angle 0), B = |1> (index 8 = pi).
     var N = 100;
@@ -247,26 +258,40 @@
     SCENARIO.menuGrey = [[0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0]];
     try { SCENARIO.editable = BoardData.makeEditable(true, [-1, -1, -1, -1, 0, 0], 0); } catch (e) {}
 
-    // Straight A->C (row 5) and B->D (row 8) wires: keep quant1's port tiles at
-    // col 0 and col C-1, fill the interior with plain wire.
-    var tiles = IBOARD._tiles.slice();
+    // Straight A->C (row 5) and B->D (row 8) wires from the pristine tiles: keep
+    // the port tiles at col 0 and col C-1, fill the interior with plain wire.
+    var tiles = def.tiles.slice();
     [5, 8].forEach(function (row) {
       for (var c = 1; c <= C - 2; c++) tiles[row * C + c] = PLAIN;
     });
-    IBOARD._tiles = tiles;
-
-    // Keep only the streaming machinery: the corner qCreate queue feeders and the
-    // C/D qCompare collectors. Drop the pre-placed transformation gates.
-    var keep = IBOARD._gateList
-      .map(function (g) { return g.pack(); })
+    // Keep only the streaming machinery: corner qCreate queue feeders + the C/D
+    // qCompare collectors. Drop the pre-placed transformation gates so each input
+    // reaches its collector unchanged (qCompare expects output == original input).
+    var gates = def.allGates
+      .map(function (g) { return Array.isArray(g) ? g.slice() : g.pack(); })
       .filter(function (p) { return p[2] === "qCompare" || p[2] === "qCreate"; });
+
+    // Apply deterministically, overwriting whatever was restored.
     IBOARD._gateList = [];
-    IBOARD.setAllGates(JSON.parse(JSON.stringify(keep)));
+    IBOARD._tiles = tiles;
+    IBOARD.setAllGates(JSON.parse(JSON.stringify(gates)));
+
+    // Overwrite every saved blueprint so the engine's restore-on-entry / play loop
+    // can never reintroduce a stale circuit.
+    try {
+      if (typeof PERSIST0 !== "undefined" && PERSIST0.quant1) {
+        for (var b = 0; b < PERSIST0.quant1.tiles.length; b++) {
+          PERSIST0.quant1.tiles[b] = tiles.slice();
+          PERSIST0.quant1.gates[b] = JSON.parse(JSON.stringify(gates));
+        }
+      }
+    } catch (e) { /* persist layout differs */ }
+
+    // Freeze the camera (no pan) on a centered focus so wires sit on the ports.
+    SCENARIO.xCameraLocs = new Array(SCENARIO.xCameraLocs.length || 50).fill(CAM_FX);
+    SCENARIO.yCameraLocs = new Array(SCENARIO.yCameraLocs.length || 50).fill(CAM_FY);
 
     LevelRefresh(SCENARIO.name, IBOARD);
-    // Pin the camera to quant1's native framing (0,0) so the wires render on the
-    // same rows as the A/B/C/D ports — replacing tiles can otherwise drift it.
-    FIELD.cameraX = 0; FIELD.cameraY = 0;
     try {
       if (CANV.scenarioOverlay && CANV.scenarioOverlay.clear) CANV.scenarioOverlay.clear();
       Overlay.createInstruct(CANV.scenarioOverlay.ctx, CANV.scenarioOverlay.w0, CANV.scenarioOverlay.h0);
