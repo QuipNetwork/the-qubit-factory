@@ -140,7 +140,7 @@
     var EMPTY = -1;          // empty board cell (def background tile)
     var FEED_COL = 1;        // qCreate feeder sits one in from the edge
     var FIRST_GATE_COL = 2;  // gates start past the feeder/intake column
-    var LAST_GATE_COL = C - 2; // gates may reach col 17 (qCompare/port at 18)
+    var LAST_GATE_COL = C - 3; // gates reach col 16; col 17 buffers, col 18 = output queue / qCompare
     var rows = CIRCUIT_ROWS;
     var n = Math.min(spec.nQubits, rows.length);
     var rowOf = function (q) { return rows[q]; };
@@ -238,10 +238,10 @@
       if (isScored(frow)) continue;
       tiles[frow * C + FEED_COL] = QCTRL_TILE;
       gates.push([FEED_COL, frow, "qCreate", "free", 0, 2, 0, 0, -1]); // random-qubit feeder
-      var trashCol = Math.min(cursor[fi] + 1, C - 1);
+      var trashCol = Math.min(cursor[fi] + 1, C - 2); // never past col 17 (col 18 = output queue)
       tiles[frow * C + trashCol] = QCTRL_TILE;
       gates.push([trashCol, frow, "trash", "free", 0, PI / 4, 0, 0, -1]);
-      for (var tc = trashCol + 1; tc <= C - 1; tc++) tiles[frow * C + tc] = EMPTY; // trim dead wire
+      for (var tc = trashCol + 1; tc <= C - 2; tc++) tiles[frow * C + tc] = EMPTY; // trim dead wire, leave col 18 native
     }
 
     spec.stats = { lines: n, single: nSingle, two: nTwo, depth: depth };
