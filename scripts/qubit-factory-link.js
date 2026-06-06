@@ -303,24 +303,22 @@
     if (typeof UNDOREDO !== "undefined" && UNDOREDO.reset) UNDOREDO.reset();
     STATE.mode = "constructing";
 
-    // The gate-palette icons are baked once by Menu.initialize() from
-    // SCENARIO.menuGrey. That ran during InitScenario.load with quant1's default
-    // (most gates greyed), before this loader set menuGrey to all-zeros, and is
-    // not repeated — so the palette keeps quant1's greyed look even though the
-    // buttons are functionally enabled. Rebuild the menu once (re-bakes every gate
-    // as enabled) and also clear the isGrey flags; retry briefly because the menu
-    // builds lazily on the first draws and the engine may re-init it late.
-    var didRebuildMenu = false;
+    // Enable the whole gate palette. The greyed LOOK is a `Paths.menuGrey` overlay
+    // that `Overlay.createMenu` paints onto the static CANV.menuBack canvas for each
+    // button whose `isGrey` is set — baked ONCE at load (with quant1's mostly-grey
+    // default), never repainted. So flipping menuGrey/isGrey alone doesn't change
+    // the picture. Clear the flags AND re-run createMenu to repaint menuBack with no
+    // grey overlays. Retry briefly: the menu builds lazily and may re-init late.
     var enableAllGates = function () {
       try {
         SCENARIO.menuGrey = [[0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0]];
-        var built = typeof MENU !== "undefined" && MENU.buttons && MENU.buttons.length;
-        if (built && !didRebuildMenu && typeof Menu !== "undefined" && Menu.initialize) {
-          Menu.initialize();
-          didRebuildMenu = true;
-        }
-        if (typeof MENU !== "undefined" && MENU.buttons) {
-          for (var i = 0; i < MENU.buttons.length; i++) MENU.buttons[i].isGrey = 0;
+        if (typeof MENU === "undefined" || !MENU.buttons || !MENU.buttons.length) return;
+        for (var i = 0; i < MENU.buttons.length; i++) MENU.buttons[i].isGrey = 0;
+        if (typeof Overlay !== "undefined" && Overlay.createMenu &&
+            CANV.menuOverlay && CANV.menuBack) {
+          Overlay.createMenu(
+            CANV.menuOverlay.ctx, CANV.menuOverlay.w0, CANV.menuOverlay.h0,
+            CANV.menuBack.ctx, CANV.menuBack.w0, CANV.menuBack.h0);
         }
       } catch (e) { /* menu not ready */ }
     };
