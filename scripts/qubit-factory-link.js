@@ -244,15 +244,6 @@
       for (var tc = trashCol + 1; tc <= C - 2; tc++) tiles[frow * C + tc] = EMPTY; // trim dead wire, leave col 18 native
     }
 
-    // Lock every empty cell. quant1 leaves the whole interior editable (a build
-    // sandbox), so hovering a blank cell that is adjacent to circuit counts as a
-    // valid placement spot and the editor drops a phantom gate there. Restricting
-    // editing to cells that actually hold wire/gates stops that while still letting
-    // the player rewire the real circuit.
-    for (var ei = 0; ei < tiles.length; ei++) {
-      if (tiles[ei] === EMPTY && SCENARIO.editable[ei] > 0) SCENARIO.editable[ei] = 0;
-    }
-
     spec.stats = { lines: n, single: nSingle, two: nTwo, depth: depth };
 
     // Keep the scored channels' seed qubits (rows 5,8 feed A/B); drop the rest of
@@ -263,6 +254,13 @@
 
     // Install deterministically (overwrite any restored board).
     IBOARD._gateList = []; IBOARD._qubitList = []; IBOARD._bitList = [];
+    // Clear the per-cell gate grid + layer state too — not just _gateList.
+    // setAllGates only ADDS gates, so any quant1 gate in a cell we don't overwrite
+    // (e.g. its inversion gates around cols 3-5) lingers in _gates[layer][cell].
+    // Where our tiles cleared that cell to empty, the engine's tooltip "self-heal"
+    // (getGate(cell) && tile<0 -> setGate) re-materializes the stale gate on hover.
+    IBOARD._gates = [new Array(tiles.length).fill(0), new Array(tiles.length).fill(0)];
+    IBOARD._state = new Array(tiles.length).fill(0);
     IBOARD._tiles = tiles;
     IBOARD.setAllBits([], JSON.parse(JSON.stringify(keepQubits)), []);
     IBOARD.setAllGates(JSON.parse(JSON.stringify(gates)));
