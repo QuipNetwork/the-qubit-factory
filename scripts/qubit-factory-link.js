@@ -244,6 +244,15 @@
       for (var tc = trashCol + 1; tc <= C - 2; tc++) tiles[frow * C + tc] = EMPTY; // trim dead wire, leave col 18 native
     }
 
+    // Lock every empty cell. quant1 leaves the whole interior editable (a build
+    // sandbox), so hovering a blank cell that is adjacent to circuit counts as a
+    // valid placement spot and the editor drops a phantom gate there. Restricting
+    // editing to cells that actually hold wire/gates stops that while still letting
+    // the player rewire the real circuit.
+    for (var ei = 0; ei < tiles.length; ei++) {
+      if (tiles[ei] === EMPTY && SCENARIO.editable[ei] > 0) SCENARIO.editable[ei] = 0;
+    }
+
     spec.stats = { lines: n, single: nSingle, two: nTwo, depth: depth };
 
     // Keep the scored channels' seed qubits (rows 5,8 feed A/B); drop the rest of
