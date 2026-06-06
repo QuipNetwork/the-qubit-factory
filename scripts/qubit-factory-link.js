@@ -234,6 +234,10 @@
     SCENARIO.QINPUTS[1] = new Array(N).fill(8);   // B = |1>  (queue value 8 = pi)
     SCENARIO.QINPUTS[2] = [];
     SCENARIO.device = goal; SCENARIO.maxTrials = goal; SCENARIO.numCorrect = goal;
+    // Unlock the gate palette and make the interior editable (drop quant1's
+    // "inversion" pre-locked gates / greyed menu).
+    SCENARIO.menuGrey = [[1, 1, 1, 1, 1, 1], [1, 1, 1, 1, 1, 1], [1, 1, 1, 1, 1, 1]];
+    try { SCENARIO.editable = BoardData.makeEditable(true, [-1, -1, -1, -1, 0, 0], 0); } catch (e) {}
     SCENARIO.channelsCol = [1, 1, 1, 1, 0, 0];
     SCENARIO.channelsDir = [-1, -1, -1, -1, 0, 0];
     FIELD.channelsDir = [-1, -1, -1, -1, 0, 0];
