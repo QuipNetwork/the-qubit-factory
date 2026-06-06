@@ -1,0 +1,7 @@
+# Netlify deploy config for The Qubit Factory (self-hosted at qbf.quip.network).
+# Pure static site: no build step, publish the repo root as-is. Custom-circuit
+# links use URL fragments (#seed=…/#qasm=…) handled client-side, so no redirect
+# rules are needed — index.html serves at / and the loader reads location.hash.
+
+[build]
+  publish = "."
