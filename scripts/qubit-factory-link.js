@@ -126,29 +126,28 @@
       .map(function (g) { return Array.isArray(g) ? g.slice() : g.pack(); })
       .filter(function (p) { return p[2] === "qCompare" || p[2] === "qCreate"; });
 
-    var FEED_COL = 0, OUT_COL = C - 1, LAST_GATE_COL = C - 2; // gates in cols 1..17
+    var EMPTY = -1;          // empty board cell (def background tile)
+    var FEED_COL = 1;        // qCreate feeder sits one in from the edge
+    var FIRST_GATE_COL = 2;  // gates start past the feeder/intake column
+    var LAST_GATE_COL = C - 2; // gates may reach col 17 (qCompare/port at 18)
     var rows = CIRCUIT_ROWS;
     var n = Math.min(spec.nQubits, rows.length);
     var rowOf = function (q) { return rows[q]; };
 
-    // Wire each line end to end. Scored rows (5,8) keep their A/B input port and
-    // C/D qCompare collector; every other line gets a continuous qCreate feeder
-    // (random qubit) and a trash collector so it runs without jamming.
+    // Blanket the circuit-row interiors with plain wire, clearing quant1's stale
+    // inversion tiles. Gates overlay this below; filler feeders, trash, and the
+    // post-trash trim are applied afterward (once each row's last-used column is
+    // known). Scored rows (5,8) keep their A/B input port + C/D qCompare; filler
+    // rows (4,6,7,9) get a qCreate feeder -> gates -> trash.
     for (var ri = 0; ri < n; ri++) {
       var row = rows[ri];
-      for (var c = 1; c <= C - 2; c++) tiles[row * C + c] = PLAIN; // wire interior
-      if (!isScored(row)) {
-        tiles[row * C + FEED_COL] = QCTRL_TILE;
-        gates.push([FEED_COL, row, "qCreate", "free", 0, 2, 0, 0, -1]); // random-qubit feeder
-        tiles[row * C + OUT_COL] = QCTRL_TILE;
-        gates.push([OUT_COL, row, "trash", "free", 0, PI / 4, 0, 0, -1]);
-      }
+      for (var c = 1; c <= C - 2; c++) tiles[row * C + c] = PLAIN;
     }
 
     // Place the seed circuit exactly as drawn: single-qubit gates on every line
     // and CX/CZ/SWAP interactions between any adjacent rows (the contiguous 4-9
     // layout makes circuit-adjacent qubits board-adjacent).
-    var cursor = new Array(n).fill(0);
+    var cursor = new Array(n).fill(FIRST_GATE_COL - 1); // first gate lands at FIRST_GATE_COL
     var nextCol = function (qs) {
       var m = 0;
       for (var i = 0; i < qs.length; i++) m = Math.max(m, cursor[qs[i]]);
@@ -196,6 +195,20 @@
         cursor[q0] = cursor[q1] = col0 + 2; nTwo++; depth = Math.max(depth, col0 + 2);
       }
     }
+    // Filler rows: qCreate feeder one in from the edge, then trash the qubit the
+    // moment it is done — one column past its last gate — and clear the dead wire
+    // out to the edge. Scored rows keep their full wire to qCompare at col 18.
+    for (var fi = 0; fi < n; fi++) {
+      var frow = rows[fi];
+      if (isScored(frow)) continue;
+      tiles[frow * C + FEED_COL] = QCTRL_TILE;
+      gates.push([FEED_COL, frow, "qCreate", "free", 0, 2, 0, 0, -1]); // random-qubit feeder
+      var trashCol = Math.min(cursor[fi] + 1, C - 1);
+      tiles[frow * C + trashCol] = QCTRL_TILE;
+      gates.push([trashCol, frow, "trash", "free", 0, PI / 4, 0, 0, -1]);
+      for (var tc = trashCol + 1; tc <= C - 1; tc++) tiles[frow * C + tc] = EMPTY; // trim dead wire
+    }
+
     spec.stats = { lines: n, single: nSingle, two: nTwo, depth: depth };
 
     // Keep the scored channels' seed qubits (rows 5,8 feed A/B); drop the rest of
