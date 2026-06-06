@@ -302,6 +302,25 @@
     } catch (e) { /* overlay not ready */ }
     if (typeof UNDOREDO !== "undefined" && UNDOREDO.reset) UNDOREDO.reset();
     STATE.mode = "constructing";
+
+    // The palette buttons are greyed from SCENARIO.menuGrey during the menu's
+    // slide-in, which runs before (and is not repeated after) this loader sets
+    // menuGrey — so they keep quant1's default (only 3 qubit gates enabled).
+    // Re-assert "all enabled" on the built buttons; retry briefly because the
+    // menu builds lazily on the first draws.
+    var enableAllGates = function () {
+      try {
+        if (typeof MENU !== "undefined" && MENU.buttons) {
+          for (var i = 0; i < MENU.buttons.length; i++) MENU.buttons[i].isGrey = 0;
+        }
+      } catch (e) { /* menu not built yet */ }
+    };
+    enableAllGates();
+    var gTries = 0;
+    var gTimer = setInterval(function () {
+      enableAllGates();
+      if (++gTries > 15) clearInterval(gTimer);
+    }, 200);
   }
 
   // ---- URL parsing ----
