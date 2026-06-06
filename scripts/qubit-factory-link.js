@@ -233,9 +233,11 @@
   // qCompare expects output == original input, so a bare wire wins trivially;
   // the player can then drop gates in and watch the score react.
   // Camera focus tile (board col,row the view centers on). quant1 pans from (5,4)
-  // for its wide puzzle; a fixed (9,2) centers our compact 2-line board so the
-  // wires line up with the A/B/C/D ports instead of drifting up-and-right.
-  var CAM_FX = 9, CAM_FY = 2;
+  // for its wide puzzle; a fixed focus that yields cameraX=cameraY=0 centers our
+  // compact 2-line board in the play frame. From the engine's camera formula
+  // (cameraX = tileW*(6-FX)+leftMargin, cameraY = tileH*(2.5-FY)) with
+  // leftMargin = tileW/2, that is FX = 6.5, FY = 2.5.
+  var CAM_FX = 6.5, CAM_FY = 2.5;
 
   function loadScoredLevel(spec, goal) {
     SCENARIO.whichOne = "quant1";
