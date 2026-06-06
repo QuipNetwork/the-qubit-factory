@@ -91,7 +91,9 @@
 
   // Every usable interior row is a wire. Rows 5 and 8 are the wired A/B input
   // and C/D output queue ports; the rest are internal lines fed by qCreate.
-  var ALL_ROWS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
+  // Rows 3-12 are the visible play area (rows 0-2 sit under the top frame, 13 is
+  // the bottom frame / alpha-beta strip).
+  var ALL_ROWS = [3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
   var OUTPUT_ROWS = [5, 8];
   var isPort = function (row) { return row === 5 || row === 8; };
 
@@ -192,10 +194,11 @@
   function installCircuit(model) {
     SCENARIO.whichOne = "freeA";
     InitScenario.load("freeA", false);
-    // Activate the native A/B (in) and C/D (out) channels so the queue widgets
-    // wire up (channels 0-3; bottom 4,5 unused).
+    // Activate the A/B (left) and C/D (right) channels; leave the bottom
+    // alpha/beta channels (4,5) off so the bottom grill doesn't draw.
     SCENARIO.channelsCol = [1, 1, 1, 1, 0, 0];
-    SCENARIO.channelsDir = [-1, -1, -1, -1, 1, 1];
+    SCENARIO.channelsDir = [-1, -1, -1, -1, 0, 0];
+    FIELD.channelsDir = [-1, -1, -1, -1, 0, 0];
     for (var r = 0; r < 6; r++) FIELD.channels[r] = Math.round((SCENARIO.channelsDir[r] + 1) / 2);
     LevelRefresh(SCENARIO.name, IBOARD);
     // Clear the freeA design template (it injects a qCreate at [17,0]).
