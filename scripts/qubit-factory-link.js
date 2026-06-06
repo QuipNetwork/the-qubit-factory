@@ -126,7 +126,7 @@
     SCENARIO.QINPUTS[0] = new Array(N).fill(0);
     SCENARIO.QINPUTS[1] = new Array(N).fill(8);
     SCENARIO.maxTrials = GOAL; SCENARIO.numCorrect = GOAL;
-    try { SCENARIO.editable = BoardData.makeEditable(true, [-1, -1, -1, -1, 0, 0], 0); } catch (e) {}
+    try { SCENARIO.editable = BoardData.makeEditable(true, [-1, -1, -1, -1, 0, 0], 0); } catch (e) { /* editability hint is best-effort */ }
 
     // Start from the pristine tiles (keeps the A/B/C/D port tiles + corner queue
     // tiles), then lay every circuit row as a clean wire.
@@ -204,24 +204,34 @@
       return dipOut;
     };
 
-    var nSingle = 0, nTwo = 0, depth = 0;
+    // A 2-qubit gate is only representable when its qubits are circuit-adjacent
+    // (|q0-q1| === 1): placeBent bends the upper line into the ONE gap row beside the
+    // lower line. The seed generator only ever emits adjacent pairs, but hand-authored
+    // QASM can specify non-adjacent or self-referencing pairs — routing those would lay
+    // tiles across (and corrupt) intervening rows, including the scored channels, so
+    // skip them. Out-of-range qubits and gates that overflow the board are skipped too.
+    // `dropped` is surfaced below so the omission isn't silent.
+    var nSingle = 0, nTwo = 0, depth = 0, dropped = 0;
+    var adjacentPair = function (a, b) { return b !== a && Math.abs(a - b) === 1; };
     for (var gi = 0; gi < spec.gates.length; gi++) {
       var g = spec.gates[gi];
       var q0 = g.qubits[0], q1 = g.qubits[1];
-      if (q0 >= n || (q1 !== undefined && q1 >= n)) continue;
+      if (q0 >= n || (q1 !== undefined && q1 >= n)) { dropped++; continue; }
       if (g.type === "single") {
         var col = nextCol([q0]);
-        if (col > LAST_GATE_COL) continue;
+        if (col > LAST_GATE_COL) { dropped++; continue; }
         placeSingle(col, q0, g.label, g.angle);
         cursor[q0] = col; nSingle++; depth = Math.max(depth, col);
       } else if (g.type === "cx" || g.type === "cz") {
+        if (!adjacentPair(q0, q1)) { dropped++; continue; }
         var start = nextCol([q0, q1]);
-        if (start + 2 > LAST_GATE_COL) continue;   // dip-in, gate, dip-out within bounds
+        if (start + 2 > LAST_GATE_COL) { dropped++; continue; }   // dip-in, gate, dip-out within bounds
         placeBent(start, q0, q1, [{ control: q0, type: "qFlip", rot: g.type === "cx" ? PI / 2 : 0 }]);
         nTwo++; depth = Math.max(depth, cursor[q0]);
       } else if (g.type === "swap") {
+        if (!adjacentPair(q0, q1)) { dropped++; continue; }
         var start2 = nextCol([q0, q1]);
-        if (start2 + 4 > LAST_GATE_COL) continue;  // dip-in, 3 gates, dip-out
+        if (start2 + 4 > LAST_GATE_COL) { dropped++; continue; }  // dip-in, 3 gates, dip-out
         placeBent(start2, q0, q1, [
           { control: q0, type: "qFlip", rot: PI / 2 },
           { control: q1, type: "qFlip", rot: PI / 2 },
@@ -229,6 +239,10 @@
         ]);
         nTwo++; depth = Math.max(depth, cursor[q0]);
       }
+    }
+    if (dropped && window.console) {
+      console.warn("[qubit-factory-link] " + dropped +
+        " gate(s) skipped (non-adjacent/self 2-qubit, out-of-range qubit, or board full)");
     }
     // Filler rows: qCreate feeder one in from the edge, then trash the qubit the
     // moment it is done — one column past its last gate — and clear the dead wire
@@ -244,7 +258,7 @@
       for (var tc = trashCol + 1; tc <= C - 2; tc++) tiles[frow * C + tc] = EMPTY; // trim dead wire, leave col 18 native
     }
 
-    spec.stats = { lines: n, single: nSingle, two: nTwo, depth: depth };
+    spec.stats = { lines: n, single: nSingle, two: nTwo, depth: depth, dropped: dropped };
 
     // Keep the scored channels' seed qubits (rows 5,8 feed A/B); drop the rest of
     // quant1's queue-display ghosts so they don't litter the circuit wires.
@@ -297,20 +311,24 @@
     var enableAllGates = function () {
       try {
         SCENARIO.menuGrey = [[0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0]];
-        if (typeof MENU === "undefined" || !MENU.buttons || !MENU.buttons.length) return;
+        if (typeof MENU === "undefined" || !MENU.buttons || !MENU.buttons.length) return false;
         for (var i = 0; i < MENU.buttons.length; i++) MENU.buttons[i].isGrey = 0;
         if (typeof Overlay !== "undefined" && Overlay.createMenu && CANV.menuOverlay && CANV.menuBack) {
           Overlay.createMenu(
             CANV.menuOverlay.ctx, CANV.menuOverlay.w0, CANV.menuOverlay.h0,
             CANV.menuBack.ctx, CANV.menuBack.w0, CANV.menuBack.h0);
         }
-      } catch (e) { /* menu not ready */ }
+        return true;
+      } catch (e) { /* menu not ready yet */ return false; }
     };
-    enableAllGates();
+    var gOk = enableAllGates();
     var gTries = 0;
     var gTimer = setInterval(function () {
-      enableAllGates();
-      if (++gTries > 12) clearInterval(gTimer);
+      if (enableAllGates()) gOk = true;
+      if (++gTries > 12) {
+        clearInterval(gTimer);
+        if (!gOk && window.console) console.warn("[qubit-factory-link] gate palette never enabled; the board may be unplayable");
+      }
     }, 250);
   }
 
@@ -321,7 +339,11 @@
     var parts = src.split("&");
     for (var i = 0; i < parts.length; i++) {
       var kv = parts[i].split("=");
-      if (kv[0] === name) return decodeURIComponent(kv[1] || "");
+      if (kv[0] === name) {
+        // A lone/invalid "%" makes decodeURIComponent throw; fall back to the raw
+        // value so a malformed hash never crashes the loader silently.
+        try { return decodeURIComponent(kv[1] || ""); } catch (e) { return kv[1] || ""; }
+      }
     }
     return null;
   }
@@ -341,8 +363,14 @@
   function evalAngle(s) {
     if (!s) return undefined;
     s = s.replace(/pi/gi, String(Math.PI));
-    if (!/^[-+*/().0-9eE\s]+$/.test(s)) return undefined; // arithmetic only
-    try { return Function("return (" + s + ")")(); } catch (e) { return undefined; }
+    if (/^[-+*/().0-9eE\s]+$/.test(s)) {                  // arithmetic only (no identifiers/calls)
+      try {
+        var v = Function("return (" + s + ")")();
+        if (typeof v === "number" && isFinite(v)) return v;
+      } catch (e) { /* fall through to the warning */ }
+    }
+    if (window.console) console.warn("[qubit-factory-link] ignoring unparseable RY angle:", s);
+    return undefined;
   }
   function parseQasm(text) {
     var gates = [], nQ = CIRCUIT_ROWS.length, m;
@@ -420,9 +448,18 @@
   }
 
   function tryLoad() {
-    var spec = circuitFromUrl();
-    if (!spec) return;
     try {
+      var spec = circuitFromUrl();
+      if (!spec) {
+        // The IIFE only schedules tryLoad when the URL has a hash/query. If a seed or
+        // qasm param was present but produced no circuit, tell the player rather than
+        // silently leaving them on the title screen with no feedback.
+        if (readParam("seed") !== null || readParam("qasm") !== null) {
+          message("Could not load circuit: the link's seed or QASM is malformed or unsupported.");
+          if (window.console) console.error("[qubit-factory-link] seed/qasm param present but produced no circuit");
+        }
+        return;
+      }
       loadLevel(spec);
       setPanel(spec);
       message("Press play: send A→C and B→D to score; the seed circuit runs alongside.");
@@ -444,6 +481,9 @@
   var timer = setInterval(function () {
     tries++;
     if (ready()) { clearInterval(timer); setTimeout(tryLoad, 600); }
-    else if (tries > 200) clearInterval(timer);
+    else if (tries > 200) {
+      clearInterval(timer);
+      if (window.console) console.error("[qubit-factory-link] engine globals never became ready; circuit not loaded");
+    }
   }, 100);
 })();
