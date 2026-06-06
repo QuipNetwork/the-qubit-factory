@@ -89,18 +89,20 @@
   var SOURCE_DIR_IN = 0;   // entered from left
   var DIR_RIGHT = 2;       // moving right
 
-  // The native quantum channels: A on row 5 (in col 0 -> out col 18), B on
-  // row 8. These are the wired input/output queue ports.
-  var CHANNEL_ROWS = [5, 8];
+  // Every usable interior row is a wire. Rows 5 and 8 are the wired A/B input
+  // and C/D output queue ports; the rest are internal lines fed by qCreate.
+  var ALL_ROWS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
+  var OUTPUT_ROWS = [5, 8];
+  var isPort = function (row) { return row === 5 || row === 8; };
 
-  // Build the board model on the native 2-channel structure. nQubits is clamped
-  // to the 2 channels. Single-qubit gates run on each channel; cross-channel
-  // (CX/CZ/SWAP) entanglement requires routing through rows 6-7 and is added in
-  // a later phase, so those are counted as "skipped" for now.
+  // Build the board: feeders on every row (ports take the inputs, others random),
+  // the seed's single + adjacent-row qControl interactions, and a trash collector
+  // on every line — rows 5/8 are the two output queues, the rest are discards.
   function buildBoardModel(circuit, nQubits) {
     var C = FIELD.cols, R = FIELD.rows;
-    var n = Math.min(nQubits, CHANNEL_ROWS.length);
-    var rowOf = function (q) { return CHANNEL_ROWS[q]; };
+    var n = Math.min(nQubits, ALL_ROWS.length);
+    var rows = ALL_ROWS.slice(0, n);
+    var rowOf = function (q) { return rows[q]; };
     var tiles = new Array(C * R).fill(-1);
     for (var q = 0; q < n; q++) {
       var row = rowOf(q);
@@ -108,20 +110,21 @@
     }
     var gateTuples = [];
 
-    // Feeders at the input ports (col 0). qCreate rot picks the input:
-    // 0 = |0> (consistent default), 3 = |+>, 2 = random qubit, 1 = random bit.
+    // Feeders (counterMax -1 = forever). Port rows take the chosen input
+    // (?inputs=zero|plus|bit|random); internal rows get random qubits.
     var inMode = (readParam("inputs") || "zero").toLowerCase();
     var feederRot = inMode === "random" ? 2 : inMode === "bit" ? 1 : inMode === "plus" ? 3 : 0;
     for (var q2 = 0; q2 < n; q2++) {
-      tiles[rowOf(q2) * C + 0] = QCTRL_TILE;
-      gateTuples.push([0, rowOf(q2), "qCreate", "free", 0, feederRot, 0, 0, -1]);
+      var r2 = rowOf(q2);
+      tiles[r2 * C + 0] = QCTRL_TILE;
+      gateTuples.push([0, r2, "qCreate", "free", 0, isPort(r2) ? feederRot : 2, 0, 0, -1]);
     }
 
-    var outCol = C - 3;                        // output collector column
+    var outCol = C - 2;                        // output collector column
     var maxGateCol = outCol - 1;
     var cursor = new Array(n).fill(0);
     var truncated = false;
-    var nSingle = 0, nTwo = 0, skipped = 0, lastCol = 0;
+    var nSingle = 0, nTwo = 0, lastCol = 0;
 
     var placeSingle = function (col, q, label, angle) {
       var enc = singleEnc(label);
@@ -129,24 +132,51 @@
       tiles[rowOf(q) * C + col] = enc.tile;
       gateTuples.push([col, rowOf(q), enc.type, "free", 0, rot, 0, 0, -1]);
     };
+    // qControl on control row + target gate on the adjacent row.
+    var placeControlled = function (col, ctrlQ, tgtQ, tgtType, tgtRot) {
+      var orient = (tgtQ > ctrlQ) ? 0 /*down*/ : 2 /*up*/;
+      tiles[rowOf(ctrlQ) * C + col] = QCTRL_TILE;
+      gateTuples.push([col, rowOf(ctrlQ), "qControl", "free", orient, 0, 0, 0, -1]);
+      tiles[rowOf(tgtQ) * C + col] = (tgtType === "rotate") ? 62 : 68;
+      gateTuples.push([col, rowOf(tgtQ), tgtType, "free", 0, tgtRot, 0, 0, -1]);
+    };
+    var nextCol = function (qs) {
+      var m = 0;
+      for (var i = 0; i < qs.length; i++) m = Math.max(m, cursor[qs[i]]);
+      return m + 1;
+    };
 
     for (var gi = 0; gi < circuit.length; gi++) {
       var g = circuit[gi];
-      var q0 = g.qubits[0];
-      if (q0 >= n) continue;
       if (g.type === "single") {
-        var col = cursor[q0] + 1;
+        var col = nextCol([g.qubits[0]]);
         if (col > maxGateCol) { truncated = true; break; }
-        placeSingle(col, q0, g.label, g.angle);
-        cursor[q0] = col;
+        placeSingle(col, g.qubits[0], g.label, g.angle);
+        cursor[g.qubits[0]] = col;
         nSingle++; lastCol = Math.max(lastCol, col);
-      } else {
-        skipped++; // cross-channel entanglement: needs rows 6-7 routing (next phase)
+      } else if (g.type === "cx" || g.type === "cz") {
+        var c1 = g.qubits[0], t1 = g.qubits[1];
+        if (Math.abs(c1 - t1) !== 1) continue;          // adjacent rows only
+        var colc = nextCol([c1, t1]);
+        if (colc > maxGateCol) { truncated = true; break; }
+        placeControlled(colc, c1, t1, "qFlip", g.type === "cx" ? PI / 2 : 0);
+        cursor[c1] = cursor[t1] = colc;
+        nTwo++; lastCol = Math.max(lastCol, colc);
+      } else if (g.type === "swap") {
+        var a = g.qubits[0], b = g.qubits[1];
+        if (Math.abs(a - b) !== 1) continue;
+        var col0 = nextCol([a, b]);
+        if (col0 + 2 > maxGateCol) { truncated = true; break; }
+        placeControlled(col0, a, b, "qFlip", PI / 2);
+        placeControlled(col0 + 1, b, a, "qFlip", PI / 2);
+        placeControlled(col0 + 2, a, b, "qFlip", PI / 2);
+        cursor[a] = cursor[b] = col0 + 2;
+        nTwo++; lastCol = Math.max(lastCol, col0 + 2);
       }
     }
 
-    // Output collectors (measure + remove) at the C/D ports so the line runs
-    // without jamming. These are the two output queues.
+    // Every line ends in a trash collector (measure + remove) so the factory
+    // runs without jamming; rows 5 and 8 are the two wired output queues.
     for (var q3 = 0; q3 < n; q3++) {
       tiles[rowOf(q3) * C + outCol] = QCTRL_TILE;
       gateTuples.push([outCol, rowOf(q3), "trash", "free", 0, PI / 4, 0, 0, -1]);
@@ -154,7 +184,7 @@
 
     return {
       tiles: tiles, qubits: [], gates: gateTuples, truncated: truncated,
-      stats: { qubits: n, single: nSingle, two: nTwo, skipped: skipped, depth: lastCol, outputs: n },
+      stats: { qubits: n, single: nSingle, two: nTwo, depth: lastCol, outputs: 2 },
     };
   }
 
@@ -246,8 +276,8 @@
     if (seed) {
       var hex = normalizeSeed(seed);
       if (!hex) return null;
-      // The playable board has 2 quantum channels, so generate a 2-qubit circuit.
-      return { mode: "seed", seedHex: hex, gates: generateCircuit(hex, 2, QF_MOMENTS), nQubits: 2 };
+      // Fill all 12 interior rows; keep depth small so it fits the screen.
+      return { mode: "seed", seedHex: hex, gates: generateCircuit(hex, 12, 10), nQubits: 12 };
     }
     var qasm = readParam("qasm");
     if (qasm) {
@@ -255,7 +285,7 @@
       try { text = b64urlDecode(qasm); } catch (e) { text = decodeURIComponent(qasm); }
       var parsed = parseQasm(text);
       if (!parsed.gates.length) return null;
-      return { mode: "qasm", seedHex: null, gates: parsed.gates, nQubits: Math.min(2, parsed.nQubits) };
+      return { mode: "qasm", seedHex: null, gates: parsed.gates, nQubits: Math.min(12, parsed.nQubits) };
     }
     return null;
   }
@@ -279,11 +309,11 @@
     if (sig) info.push("• Signature: #" + sig.replace(/^#/, ""));
     if (rares) info.push("• Rares: " + rares);
     var st = model.stats;
-    info.push("• " + st.qubits + " channels (A,B → C,D) · " + st.single + " gates");
+    info.push("• " + st.qubits + " lines · " + st.single + " gates · " + st.two + " interactions");
     var im = (readParam("inputs") || "zero").toLowerCase();
     var inLabel = im === "random" ? "random" : im === "bit" ? "random bits" : im === "plus" ? "|+>" : "|0>";
-    info.push("• Inputs: " + inLabel + " on A and B");
-    if (st.skipped) info.push("• " + st.skipped + " cross-channel gates pending routing");
+    info.push("• Inputs: " + inLabel + " on A/B, random on internal lines");
+    info.push("• 2 output queues (C,D) + trash");
     info.push("• Goal: 20 zeros in each output queue");
     try {
       SCENARIO.title = spec.mode === "seed" ? "Quantum Echo" : "QASM Circuit";
