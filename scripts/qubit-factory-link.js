@@ -89,40 +89,39 @@
   var SOURCE_DIR_IN = 0;   // entered from left
   var DIR_RIGHT = 2;       // moving right
 
-  // Build the board model { tiles, qubits, gates, truncated } for the circuit.
-  // rngSeed (a uint) randomizes how the output wires are XOR-merged.
-  function buildBoardModel(circuit, nQubits, rngSeed) {
+  // The native quantum channels: A on row 5 (in col 0 -> out col 18), B on
+  // row 8. These are the wired input/output queue ports.
+  var CHANNEL_ROWS = [5, 8];
+
+  // Build the board model on the native 2-channel structure. nQubits is clamped
+  // to the 2 channels. Single-qubit gates run on each channel; cross-channel
+  // (CX/CZ/SWAP) entanglement requires routing through rows 6-7 and is added in
+  // a later phase, so those are counted as "skipped" for now.
+  function buildBoardModel(circuit, nQubits) {
     var C = FIELD.cols, R = FIELD.rows;
-    var maxCol = C - 2;                       // last usable gate column
-    var rowOf = function (q) { return ROW0 + q; };
+    var n = Math.min(nQubits, CHANNEL_ROWS.length);
+    var rowOf = function (q) { return CHANNEL_ROWS[q]; };
     var tiles = new Array(C * R).fill(-1);
-    for (var q = 0; q < nQubits; q++) {
+    for (var q = 0; q < n; q++) {
       var row = rowOf(q);
       for (var c = 0; c < C; c++) tiles[row * C + c] = PLAIN;
     }
     var gateTuples = [];
-    var qubitTuples = [];                       // empty: feeders create the qubits
 
-    // Reserve end columns for the output stage: reverse fan-out merge of each
-    // half into one wire, then a trash sink on every wire (the 2 merged wires
-    // are the output queues; the rest are discard sinks). Feeders fill col 0.
-    // Randomize where the two output groups split, so which wires XOR into which
-    // output queue varies per circuit (groups stay contiguous for adjacency).
-    var split = nQubits > 1 ? (1 + ((rngSeed >>> 0) % (nQubits - 1))) : 1;
-    var mergeCols = Math.max(split, nQubits - split) - 1;
-    if (mergeCols < 0) mergeCols = 0;
-    var trashCol = maxCol;                      // last usable column
-    var mergeStart = trashCol - mergeCols;
-    var maxGateCol = mergeStart - 1;            // seed gates must fit before the merge
-
-    // Feeders: one continuous random-qubit source per wire (counterMax -1 = forever).
-    for (var q2 = 0; q2 < nQubits; q2++) {
+    // Feeders at the input ports (col 0). qCreate rot picks the input:
+    // 0 = |0> (consistent default), 3 = |+>, 2 = random qubit, 1 = random bit.
+    var inMode = (readParam("inputs") || "zero").toLowerCase();
+    var feederRot = inMode === "random" ? 2 : inMode === "bit" ? 1 : inMode === "plus" ? 3 : 0;
+    for (var q2 = 0; q2 < n; q2++) {
       tiles[rowOf(q2) * C + 0] = QCTRL_TILE;
-      gateTuples.push([0, rowOf(q2), "qCreate", "free", 0, 2, 0, 0, -1]);
+      gateTuples.push([0, rowOf(q2), "qCreate", "free", 0, feederRot, 0, 0, -1]);
     }
-    var cursor = new Array(nQubits).fill(0);   // last column used per qubit (col 0 = feeder)
+
+    var outCol = C - 3;                        // output collector column
+    var maxGateCol = outCol - 1;
+    var cursor = new Array(n).fill(0);
     var truncated = false;
-    var nSingle = 0, nTwo = 0, lastCol = 0;    // stats for the info panel
+    var nSingle = 0, nTwo = 0, skipped = 0, lastCol = 0;
 
     var placeSingle = function (col, q, label, angle) {
       var enc = singleEnc(label);
@@ -130,72 +129,32 @@
       tiles[rowOf(q) * C + col] = enc.tile;
       gateTuples.push([col, rowOf(q), enc.type, "free", 0, rot, 0, 0, -1]);
     };
-    // control = upper qubit, target = lower (target = control+1). orientCtrl 0=down.
-    var placeControlled = function (col, ctrlQ, tgtQ, tgtType, tgtRot) {
-      var orient = (tgtQ > ctrlQ) ? 0 /*down*/ : 2 /*up*/;
-      tiles[rowOf(ctrlQ) * C + col] = QCTRL_TILE;
-      gateTuples.push([col, rowOf(ctrlQ), "qControl", "free", orient, 0, 0, 0, -1]);
-      tiles[rowOf(tgtQ) * C + col] = (tgtType === "rotate") ? 62 : 68;
-      gateTuples.push([col, rowOf(tgtQ), tgtType, "free", 0, tgtRot, 0, 0, -1]);
-    };
-    var nextCol = function (qs) {
-      var m = 0;
-      for (var i = 0; i < qs.length; i++) m = Math.max(m, cursor[qs[i]]);
-      return m + 1;
-    };
 
-    // Gates are emitted moment-major, so stopping at the first gate that does
-    // not fit yields a clean temporal PREFIX of the circuit (exact as far as it
-    // goes) rather than a scattered subset.
     for (var gi = 0; gi < circuit.length; gi++) {
       var g = circuit[gi];
+      var q0 = g.qubits[0];
+      if (q0 >= n) continue;
       if (g.type === "single") {
-        var col = nextCol([g.qubits[0]]);
+        var col = cursor[q0] + 1;
         if (col > maxGateCol) { truncated = true; break; }
-        placeSingle(col, g.qubits[0], g.label, g.angle);
-        cursor[g.qubits[0]] = col;
+        placeSingle(col, q0, g.label, g.angle);
+        cursor[q0] = col;
         nSingle++; lastCol = Math.max(lastCol, col);
-      } else if (g.type === "cx" || g.type === "cz") {
-        var c1 = g.qubits[0], t1 = g.qubits[1];
-        if (Math.abs(c1 - t1) !== 1) { truncated = true; continue; } // QF needs adjacency
-        var colc = nextCol([c1, t1]);
-        if (colc > maxGateCol) { truncated = true; break; }
-        if (g.type === "cx") placeControlled(colc, c1, t1, "qFlip", PI / 2);
-        else placeControlled(colc, c1, t1, "qFlip", 0); // CZ
-        cursor[c1] = cursor[t1] = colc;
-        nTwo++; lastCol = Math.max(lastCol, colc);
-      } else if (g.type === "swap") {
-        // SWAP = CX(a,b) CX(b,a) CX(a,b), three columns.
-        var a = g.qubits[0], b = g.qubits[1];
-        if (Math.abs(a - b) !== 1) { truncated = true; continue; }
-        var col0 = nextCol([a, b]);
-        if (col0 + 2 > maxGateCol) { truncated = true; break; }
-        placeControlled(col0, a, b, "qFlip", PI / 2);
-        placeControlled(col0 + 1, b, a, "qFlip", PI / 2);
-        placeControlled(col0 + 2, a, b, "qFlip", PI / 2);
-        cursor[a] = cursor[b] = col0 + 2;
-        nTwo++; lastCol = Math.max(lastCol, col0 + 2);
+      } else {
+        skipped++; // cross-channel entanglement: needs rows 6-7 routing (next phase)
       }
     }
 
-    // Output stage: XOR-merge each contiguous group into its top wire (the two
-    // output queues are wire 0 and wire `split`), then a trash sink on every
-    // wire measures and removes the qubit so the factory runs without jamming.
-    for (var k = split - 1; k >= 1; k--) {                 // group A -> wire 0
-      placeControlled(mergeStart + (split - 1 - k), k, k - 1, "qFlip", PI / 2);
-    }
-    for (var k2 = nQubits - 1; k2 >= split + 1; k2--) {    // group B -> wire `split`
-      placeControlled(mergeStart + (nQubits - 1 - k2), k2, k2 - 1, "qFlip", PI / 2);
-    }
-    for (var q3 = 0; q3 < nQubits; q3++) {                 // sinks (measure + remove)
-      tiles[rowOf(q3) * C + trashCol] = QCTRL_TILE;
-      gateTuples.push([trashCol, rowOf(q3), "trash", "free", 0, PI / 4, 0, 0, -1]);
+    // Output collectors (measure + remove) at the C/D ports so the line runs
+    // without jamming. These are the two output queues.
+    for (var q3 = 0; q3 < n; q3++) {
+      tiles[rowOf(q3) * C + outCol] = QCTRL_TILE;
+      gateTuples.push([outCol, rowOf(q3), "trash", "free", 0, PI / 4, 0, 0, -1]);
     }
 
     return {
-      tiles: tiles, qubits: qubitTuples, gates: gateTuples, truncated: truncated,
-      stats: { qubits: nQubits, single: nSingle, two: nTwo, depth: lastCol,
-               outputs: nQubits > 1 ? 2 : 1, outputRows: [ROW0, ROW0 + split] },
+      tiles: tiles, qubits: [], gates: gateTuples, truncated: truncated,
+      stats: { qubits: n, single: nSingle, two: nTwo, skipped: skipped, depth: lastCol, outputs: n },
     };
   }
 
@@ -203,15 +162,27 @@
   function installCircuit(model) {
     SCENARIO.whichOne = "freeA";
     InitScenario.load("freeA", false);
+    // Activate the native A/B (in) and C/D (out) channels so the queue widgets
+    // wire up (channels 0-3; bottom 4,5 unused).
+    SCENARIO.channelsCol = [1, 1, 1, 1, 0, 0];
+    SCENARIO.channelsDir = [-1, -1, -1, -1, 1, 1];
+    for (var r = 0; r < 6; r++) FIELD.channels[r] = Math.round((SCENARIO.channelsDir[r] + 1) / 2);
     LevelRefresh(SCENARIO.name, IBOARD);
     // Clear the freeA design template (it injects a qCreate at [17,0]).
     IBOARD._gateList = [];
     IBOARD._qubitList = [];
     IBOARD._bitList = [];
     IBOARD._tiles = model.tiles;
-    IBOARD.setAllBits([], JSON.parse(JSON.stringify(model.qubits)), []);
+    IBOARD.setAllBits([], [], []);
     IBOARD.setAllGates(JSON.parse(JSON.stringify(model.gates)));
     LevelRefresh(SCENARIO.name, IBOARD);
+    // Redraw the channel overlay so the input/output queue widgets appear.
+    try {
+      if (CANV.scenarioOverlay && CANV.scenarioOverlay.clear) CANV.scenarioOverlay.clear();
+      Overlay.createInstruct(CANV.scenarioOverlay.ctx, CANV.scenarioOverlay.w0, CANV.scenarioOverlay.h0);
+      if (CANV.scenarioMask && CANV.scenarioMask.clear) CANV.scenarioMask.clear();
+      Overlay.createInstruct(CANV.scenarioMask.ctx, CANV.scenarioMask.w0, CANV.scenarioMask.h0, true);
+    } catch (e) { /* overlay not ready */ }
     if (typeof UNDOREDO !== "undefined" && UNDOREDO.reset) UNDOREDO.reset();
     STATE.mode = "constructing";
   }
@@ -275,9 +246,8 @@
     if (seed) {
       var hex = normalizeSeed(seed);
       if (!hex) return null;
-      // Use a different slice from the circuit LCG so the output split is independent.
-      var rng = parseInt(hex.slice(8, 16), 16) >>> 0;
-      return { mode: "seed", seedHex: hex, rngSeed: rng, gates: generateCircuit(hex, QF_QUBITS, QF_MOMENTS), nQubits: QF_QUBITS };
+      // The playable board has 2 quantum channels, so generate a 2-qubit circuit.
+      return { mode: "seed", seedHex: hex, gates: generateCircuit(hex, 2, QF_MOMENTS), nQubits: 2 };
     }
     var qasm = readParam("qasm");
     if (qasm) {
@@ -285,7 +255,7 @@
       try { text = b64urlDecode(qasm); } catch (e) { text = decodeURIComponent(qasm); }
       var parsed = parseQasm(text);
       if (!parsed.gates.length) return null;
-      return { mode: "qasm", seedHex: null, rngSeed: (parsed.gates.length * 2654435761) >>> 0, gates: parsed.gates, nQubits: parsed.nQubits };
+      return { mode: "qasm", seedHex: null, gates: parsed.gates, nQubits: Math.min(2, parsed.nQubits) };
     }
     return null;
   }
@@ -309,10 +279,12 @@
     if (sig) info.push("• Signature: #" + sig.replace(/^#/, ""));
     if (rares) info.push("• Rares: " + rares);
     var st = model.stats;
-    info.push("• " + st.qubits + " qubits · " + (st.single + st.two) + " gates · " + st.two + " entangling");
-    info.push("• Random feeders → " + st.outputs + " output queues (XOR-merged)");
+    info.push("• " + st.qubits + " channels (A,B → C,D) · " + st.single + " gates");
+    var im = (readParam("inputs") || "zero").toLowerCase();
+    var inLabel = im === "random" ? "random" : im === "bit" ? "random bits" : im === "plus" ? "|+>" : "|0>";
+    info.push("• Inputs: " + inLabel + " on A and B");
+    if (st.skipped) info.push("• " + st.skipped + " cross-channel gates pending routing");
     info.push("• Goal: 20 zeros in each output queue");
-    if (model.truncated) info.push("• Trimmed to fit the factory grid");
     try {
       SCENARIO.title = spec.mode === "seed" ? "Quantum Echo" : "QASM Circuit";
       SCENARIO.info = info;
@@ -328,10 +300,10 @@
     var spec = circuitFromUrl();
     if (!spec) return;
     try {
-      var model = buildBoardModel(spec.gates, spec.nQubits, spec.rngSeed);
+      var model = buildBoardModel(spec.gates, spec.nQubits);
       installCircuit(model);
       setPanel(spec, model);
-      message(model.truncated ? "Circuit loaded (trimmed to fit). Press play!" : "Circuit loaded! Press play.");
+      message("Circuit loaded! Press play.");
       if (typeof SFX !== "undefined" && SFX.click2) SFX.click2.play();
     } catch (e) {
       message("Could not load circuit from link.");
