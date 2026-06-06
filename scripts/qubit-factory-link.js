@@ -220,58 +220,53 @@
     STATE.mode = "constructing";
   }
 
-  // Custom scored level (v1, play-test iteration): borrow quant1's scoring/operate
-  // machinery (load it first), then override the inputs + goal and REPLACE the
-  // board with a clean 2-channel design: A (row 5) and B (row 8) straight wires,
-  // qCreate feeders reading QINPUTS (A=|0>, B=|1>), output targets C=|1>, D=|0>
-  // via halt-ghost qubits, qCompare collectors, and a prefilled X solution.
+  // Back-to-basics scored level: take the native quant1 ("QI.A: Inversion")
+  // device level — which already wires A->C and B->D, streams from QINPUTS, and
+  // scores via qCompare collectors at col 18 — and reduce it to a trivial pass-
+  // through. We keep quant1's native board shape (so the camera stays at its
+  // native framing and the wires line up with the A/B/C/D ports), then:
+  //   - fill the interior of rows 5 & 8 with straight wire (cols 1..C-2),
+  //   - drop quant1's locked transformation gates (the qFlip/rotate at cols 3-5)
+  //     so the input flows to the output unchanged,
+  //   - feed constant inputs (A = |0>, B = |1>),
+  //   - enable the whole gate palette (menuGrey 0 = available, 1 = greyed).
+  // qCompare expects output == original input, so a bare wire wins trivially;
+  // the player can then drop gates in and watch the score react.
   function loadScoredLevel(spec, goal) {
     SCENARIO.whichOne = "quant1";
-    InitScenario.load("quant1", false);          // machinery + config base
-    var C = FIELD.cols, R = FIELD.rows;
-    var N = Math.max(goal * 3, 60);
-    SCENARIO.QINPUTS[0] = new Array(N).fill(0);   // A = |0>  (queue value 0)
-    SCENARIO.QINPUTS[1] = new Array(N).fill(8);   // B = |1>  (queue value 8 = pi)
-    SCENARIO.QINPUTS[2] = [];
-    SCENARIO.device = goal; SCENARIO.maxTrials = goal; SCENARIO.numCorrect = goal;
-    // Unlock the gate palette and make the interior editable (drop quant1's
-    // "inversion" pre-locked gates / greyed menu).
-    SCENARIO.menuGrey = [[1, 1, 1, 1, 1, 1], [1, 1, 1, 1, 1, 1], [1, 1, 1, 1, 1, 1]];
+    InitScenario.load("quant1", false);          // native board + device + scoring
+    var C = FIELD.cols;
+
+    // Constant streams: A = |0> (queue index 0 = angle 0), B = |1> (index 8 = pi).
+    var N = 100;
+    SCENARIO.QINPUTS[0] = new Array(N).fill(0);
+    SCENARIO.QINPUTS[1] = new Array(N).fill(8);
+    SCENARIO.maxTrials = goal; SCENARIO.numCorrect = goal;
+
+    // Enable the full gate palette. 0 = available, 1 = greyed/disabled.
+    SCENARIO.menuGrey = [[0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0]];
     try { SCENARIO.editable = BoardData.makeEditable(true, [-1, -1, -1, -1, 0, 0], 0); } catch (e) {}
-    SCENARIO.channelsCol = [1, 1, 1, 1, 0, 0];
-    SCENARIO.channelsDir = [-1, -1, -1, -1, 0, 0];
-    FIELD.channelsDir = [-1, -1, -1, -1, 0, 0];
-    for (var r = 0; r < 6; r++) FIELD.channels[r] = Math.round((SCENARIO.channelsDir[r] + 1) / 2);
 
-    // Clean board: two straight channels on rows 5 and 8.
-    var tiles = new Array(C * R).fill(-1);
+    // Straight A->C (row 5) and B->D (row 8) wires: keep quant1's port tiles at
+    // col 0 and col C-1, fill the interior with plain wire.
+    var tiles = IBOARD._tiles.slice();
     [5, 8].forEach(function (row) {
-      for (var c = 0; c < C; c++) tiles[row * C + c] = PLAIN;
-      tiles[row * C + 0] = QCTRL_TILE;            // feeder seat
-      tiles[row * C + 9] = 68;                    // X gate seat
-      tiles[row * C + (C - 1)] = QCTRL_TILE;      // qCompare seat
+      for (var c = 1; c <= C - 2; c++) tiles[row * C + c] = PLAIN;
     });
-    tiles[8 * C + 1] = 68;                        // B input-prep seat (|0>->|1>)
-    var gates = [
-      [0, 5, "qCreate", "free", 0, 0, 0, 0, N],            // feed A = |0>
-      [0, 8, "qCreate", "free", 0, 0, 0, 0, N],            // feed B = |0> ...
-      [1, 8, "qFlip", "free", 0, PI / 2, 0, 0, -1],        // ... then X so B enters as |1>
-      [9, 5, "qFlip", "free", 0, PI / 2, 0, 0, -1],        // X (prefilled solution): A |0>->|1> = C
-      [9, 8, "qFlip", "free", 0, PI / 2, 0, 0, -1],        // X (prefilled solution): B |1>->|0> = D
-      [C - 1, 5, "qCompare", "free", 0, 0, 0, 0, -1],      // output C
-      [C - 1, 8, "qCompare", "free", 0, 0, 0, 0, -1],      // output D
-    ];
-    // Output targets as halt-ghost qubits: C=|1> (angle pi), D=|0> (angle 0).
-    var qubits = [
-      [C - 1, 5, 0, 2, "halt", PI, true],
-      [C - 1, 8, 0, 2, "halt", 0, true],
-    ];
-
-    IBOARD._gateList = []; IBOARD._qubitList = []; IBOARD._bitList = [];
     IBOARD._tiles = tiles;
-    IBOARD.setAllBits([], JSON.parse(JSON.stringify(qubits)), []);
-    IBOARD.setAllGates(JSON.parse(JSON.stringify(gates)));
+
+    // Keep only the streaming machinery: the corner qCreate queue feeders and the
+    // C/D qCompare collectors. Drop the pre-placed transformation gates.
+    var keep = IBOARD._gateList
+      .map(function (g) { return g.pack(); })
+      .filter(function (p) { return p[2] === "qCompare" || p[2] === "qCreate"; });
+    IBOARD._gateList = [];
+    IBOARD.setAllGates(JSON.parse(JSON.stringify(keep)));
+
     LevelRefresh(SCENARIO.name, IBOARD);
+    // Pin the camera to quant1's native framing (0,0) so the wires render on the
+    // same rows as the A/B/C/D ports — replacing tiles can otherwise drift it.
+    FIELD.cameraX = 0; FIELD.cameraY = 0;
     try {
       if (CANV.scenarioOverlay && CANV.scenarioOverlay.clear) CANV.scenarioOverlay.clear();
       Overlay.createInstruct(CANV.scenarioOverlay.ctx, CANV.scenarioOverlay.w0, CANV.scenarioOverlay.h0);
@@ -400,8 +395,8 @@
     if (pal) info.push("• Palette: " + pal);
     if (sig) info.push("• Signature: #" + sig.replace(/^#/, ""));
     info.push("• Inputs: A=|0>, B=|1>");
-    info.push("• Targets: C=|1>, D=|0> (invert)");
-    info.push("• Win: " + goal + " correct on each");
+    info.push("• Goal: pass A->C and B->D unchanged");
+    info.push("• Win: " + goal + " correct outputs");
     try {
       SCENARIO.title = "Quantum Echo";
       SCENARIO.info = info;
@@ -426,7 +421,7 @@
         var goal = parseInt(readParam("goal") || "20", 10) || 20;
         loadScoredLevel(spec, goal);
         setScoredPanel(spec, goal);
-        message("Press play: invert A=0 -> C=1 and B=1 -> D=0.");
+        message("Press play: send A->C and B->D. The wire already solves it.");
       }
       if (typeof SFX !== "undefined" && SFX.click2) SFX.click2.play();
     } catch (e) {
