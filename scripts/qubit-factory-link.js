@@ -3,12 +3,13 @@
  *
  * Reads `#seed=<hex>` or `#qasm=<base64url QASM>` from the page URL and builds a
  * single playable level on the factory board: the seed's 6-qubit circuit laid on
- * 6 contiguous rows (4-9), matching the certificate diagram.
+ * 6 SPACED lines (rows 1,3,5,8,10,12) so the board reads like an airy circuit.
  *   - Rows 5 and 8 are the scored channels: A=|0> -> C and B=|1> -> D, collected
  *     by qCompare. The circuit's gates land on them too, so the output is wrong
  *     until the player rewires it — fixing the circuit is the game.
- *   - Rows 4,6,7,9 are filler: a qCreate feeder -> the seed's gates -> a trash
- *     collector. CX/CZ/SWAP interactions connect adjacent rows.
+ *   - The other four lines are filler: a qCreate feeder -> the seed's gates -> a
+ *     trash collector. Because the lines are spaced, CX/CZ/SWAP interactions bend
+ *     the upper line down through the empty gap row(s) to meet the lower line.
  *
  * There are no mode/score URL params — the behavior and goal are fixed defaults.
  * Optional `&pattern=&palette=&sig=&rares=` enrich the side panel with NFT-trait
@@ -87,19 +88,29 @@
   }
 
   // ---- Board layout (we know the exact geometry: 19 cols x 14 rows) ----
-  var PLAIN = 2;            // plain transport tile
-  var QCTRL_TILE = 62;      // quantum tile (qControl seat / quantum lane)
+  var PLAIN = 2;            // plain transport tile (horizontal-only routing)
+  var QCTRL_TILE = 62;      // quantum tile (qControl seat / straight quantum lane)
+  // Free lane-0 routing tiles used to bend a line into a gap row and back (verified
+  // via DIRQUANTUM.fromTo): a qubit follows these without needing a gate.
+  var TILE_VERT = 1;        // vertical straight  (enter-top -> down, enter-bottom -> up)
+  var TILE_DIP_DOWN = 5;    // corner |_  home -> gap (enter-left -> down)
+  var TILE_GAP_IN = 3;      // corner |~  descent -> gap run (enter-top -> right)
+  var TILE_GAP_OUT = 6;     // corner ~|  gap run -> ascent (enter-left -> up)
+  var TILE_DIP_UP = 4;      // corner _|  ascent -> home (enter-bottom -> right)
   var GOAL = 20;            // correct outputs to win (fixed)
   var GEN_MOMENTS = 16;     // generated circuit depth (placement caps it to the cols)
   // Camera focus that yields cameraX=cameraY=0 (board centered in the play frame).
   var CAM_FX = 6.5, CAM_FY = 2.5;
-  // The seed circuit fills 6 contiguous rows (4-9), matching the 6-qubit art.
-  // Rows 5,8 are the scored A/B -> C/D channels (fed by the queue, collected by
-  // qCompare); rows 4,6,7,9 are filler (qCreate feeder -> gates -> trash). The
-  // full circuit lands on every line, including CX/CZ/SWAP interactions between
-  // adjacent rows — the output is wrong until the player fixes it (that's the
-  // game). Rows 0-3,10-13 stay empty / quant1's queue-feeder corners.
-  var CIRCUIT_ROWS = [4, 5, 6, 7, 8, 9];
+  // The seed circuit is laid on 6 SPACED lines (rows 1,3,5,8,10,12) so the board
+  // reads like an airy circuit. Rows 5,8 are the scored A/B -> C/D channels (fed by
+  // the queue, collected by qCompare at col 18) and are hard-fixed by the engine;
+  // the other four are filler (qCreate feeder -> gates -> trash). Because the lines
+  // are spaced, CX/CZ/SWAP interactions between circuit-adjacent qubits bend the
+  // upper line down through the empty gap row(s) to sit beside the lower line, then
+  // climb back (see placeBent). Each adjacent pair owns a distinct gap row, so dips
+  // never collide. The circuit lands wrong until the player fixes it (that's the
+  // game). Rows 0,13 stay clear for quant1's queue-feeder corners.
+  var CIRCUIT_ROWS = [1, 3, 5, 8, 10, 12];
   var isScored = function (row) { return row === 5 || row === 8; };
 
   // Build the unified level into the live board.
@@ -144,29 +155,53 @@
       for (var c = 1; c <= C - 2; c++) tiles[row * C + c] = PLAIN;
     }
 
-    // Place the seed circuit exactly as drawn: single-qubit gates on every line
-    // and CX/CZ/SWAP interactions between any adjacent rows (the contiguous 4-9
-    // layout makes circuit-adjacent qubits board-adjacent).
+    // Place the seed circuit: single-qubit gates sit on the line's own row; every
+    // 2-qubit gate bends the UPPER line down into the gap row(s) beside the lower
+    // line (placeBent), since the spaced layout leaves circuit-adjacent lines two or
+    // more board rows apart.
     var cursor = new Array(n).fill(FIRST_GATE_COL - 1); // first gate lands at FIRST_GATE_COL
     var nextCol = function (qs) {
       var m = 0;
       for (var i = 0; i < qs.length; i++) m = Math.max(m, cursor[qs[i]]);
       return m + 1;
     };
-    var boardAdjacent = function (a, b) { return Math.abs(rowOf(a) - rowOf(b)) === 1; };
     var placeSingle = function (col, q, label, angle) {
       var enc = singleEnc(label);
       var rot = (typeof angle === "number") ? angle : enc.rot;
       tiles[rowOf(q) * C + col] = enc.tile;
       gates.push([col, rowOf(q), enc.type, "free", 0, rot, 0, 0, -1]);
     };
-    // qControl on the control row + the target gate on the adjacent row.
-    var placeControlled = function (col, cq, tq, type, rot) {
-      var cr = rowOf(cq), tr = rowOf(tq), orient = (tr > cr) ? 0 /*down*/ : 2 /*up*/;
-      tiles[cr * C + col] = QCTRL_TILE;
-      gates.push([col, cr, "qControl", "free", orient, 0, 0, 0, -1]);
-      tiles[tr * C + col] = (type === "rotate") ? 62 : 68;
-      gates.push([col, tr, type, "free", 0, rot, 0, 0, -1]);
+    // Bent 2-qubit interaction: dip the upper line down into the gap row beside the
+    // lower line, carry `steps` gate columns horizontally, then climb back. Each
+    // step = {control:<qIndex>, type:"qFlip"|"rotate", rot}. Routing uses free
+    // corner/vertical tiles; the qControl always sits on a STRAIGHT quantum tile (62)
+    // inside the gap run (seating it on a turn halts the qubit). orient 0=down 2=up.
+    var placeBent = function (startCol, qA, qB, steps) {
+      var hi = (rowOf(qA) < rowOf(qB)) ? qA : qB;
+      var lo = (hi === qA) ? qB : qA;
+      var hiRow = rowOf(hi), loRow = rowOf(lo), gapRow = loRow - 1;
+      var dipIn = startCol, dipOut = startCol + steps.length + 1, r;
+      // Dip-in column: home-row corner, vertical descent, turn into the gap row.
+      tiles[hiRow * C + dipIn] = TILE_DIP_DOWN;
+      for (r = hiRow + 1; r < gapRow; r++) tiles[r * C + dipIn] = TILE_VERT;
+      tiles[gapRow * C + dipIn] = TILE_GAP_IN;
+      // Dip-out column: leave the gap run, vertical ascent, back to the home row.
+      tiles[gapRow * C + dipOut] = TILE_GAP_OUT;
+      for (r = gapRow - 1; r > hiRow; r--) tiles[r * C + dipOut] = TILE_VERT;
+      tiles[hiRow * C + dipOut] = TILE_DIP_UP;
+      // Clear the now-unused straight home-row segment beneath the dip.
+      for (var hc = dipIn + 1; hc < dipOut; hc++) tiles[hiRow * C + hc] = EMPTY;
+      // Gate columns: qControl on the control's row, target gate on the other.
+      for (var s = 0; s < steps.length; s++) {
+        var gcol = dipIn + 1 + s, st = steps[s], ctrlIsHi = (st.control === hi);
+        var ctrlRow = ctrlIsHi ? gapRow : loRow, tgtRow = ctrlIsHi ? loRow : gapRow;
+        tiles[ctrlRow * C + gcol] = QCTRL_TILE;
+        gates.push([gcol, ctrlRow, "qControl", "free", ctrlIsHi ? 0 : 2, 0, 0, 0, -1]);
+        tiles[tgtRow * C + gcol] = (st.type === "rotate") ? 62 : 68;
+        gates.push([gcol, tgtRow, st.type, "free", 0, st.rot, 0, 0, -1]);
+      }
+      cursor[qA] = cursor[qB] = dipOut;
+      return dipOut;
     };
 
     var nSingle = 0, nTwo = 0, depth = 0;
@@ -180,19 +215,19 @@
         placeSingle(col, q0, g.label, g.angle);
         cursor[q0] = col; nSingle++; depth = Math.max(depth, col);
       } else if (g.type === "cx" || g.type === "cz") {
-        if (!boardAdjacent(q0, q1)) continue;
-        var colc = nextCol([q0, q1]);
-        if (colc > LAST_GATE_COL) continue;
-        placeControlled(colc, q0, q1, "qFlip", g.type === "cx" ? PI / 2 : 0);
-        cursor[q0] = cursor[q1] = colc; nTwo++; depth = Math.max(depth, colc);
+        var start = nextCol([q0, q1]);
+        if (start + 2 > LAST_GATE_COL) continue;   // dip-in, gate, dip-out within bounds
+        placeBent(start, q0, q1, [{ control: q0, type: "qFlip", rot: g.type === "cx" ? PI / 2 : 0 }]);
+        nTwo++; depth = Math.max(depth, cursor[q0]);
       } else if (g.type === "swap") {
-        if (!boardAdjacent(q0, q1)) continue;
-        var col0 = nextCol([q0, q1]);
-        if (col0 + 2 > LAST_GATE_COL) continue;
-        placeControlled(col0, q0, q1, "qFlip", PI / 2);
-        placeControlled(col0 + 1, q1, q0, "qFlip", PI / 2);
-        placeControlled(col0 + 2, q0, q1, "qFlip", PI / 2);
-        cursor[q0] = cursor[q1] = col0 + 2; nTwo++; depth = Math.max(depth, col0 + 2);
+        var start2 = nextCol([q0, q1]);
+        if (start2 + 4 > LAST_GATE_COL) continue;  // dip-in, 3 gates, dip-out
+        placeBent(start2, q0, q1, [
+          { control: q0, type: "qFlip", rot: PI / 2 },
+          { control: q1, type: "qFlip", rot: PI / 2 },
+          { control: q0, type: "qFlip", rot: PI / 2 },
+        ]);
+        nTwo++; depth = Math.max(depth, cursor[q0]);
       }
     }
     // Filler rows: qCreate feeder one in from the edge, then trash the qubit the
