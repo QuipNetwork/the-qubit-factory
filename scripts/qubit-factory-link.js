@@ -220,21 +220,60 @@
     STATE.mode = "constructing";
   }
 
-  // Scored level: piggyback quant1's fully-wired machinery (input queues, output
-  // targets, scoring, win). quant1 inverts A->C and B->D, so inputs A=|0>, B=|1>
-  // give targets C=|1>, D=|0>. Override the inputs and the win count, and prefill
-  // a circuit (default: quant1's own inversion solution, which wins).
+  // Custom scored level (v1, play-test iteration): borrow quant1's scoring/operate
+  // machinery (load it first), then override the inputs + goal and REPLACE the
+  // board with a clean 2-channel design: A (row 5) and B (row 8) straight wires,
+  // qCreate feeders reading QINPUTS (A=|0>, B=|1>), output targets C=|1>, D=|0>
+  // via halt-ghost qubits, qCompare collectors, and a prefilled X solution.
   function loadScoredLevel(spec, goal) {
     SCENARIO.whichOne = "quant1";
-    // solution=true prefills quant1's inversion circuit so there is something to run.
-    InitScenario.load("quant1", true);
+    InitScenario.load("quant1", false);          // machinery + config base
+    var C = FIELD.cols, R = FIELD.rows;
     var N = Math.max(goal * 3, 60);
-    // A = |0> (queue value 0), B = |1> (queue value 8 = angle pi).
-    SCENARIO.QINPUTS[0] = new Array(N).fill(0);
-    SCENARIO.QINPUTS[1] = new Array(N).fill(8);
-    SCENARIO.device = goal;
-    SCENARIO.maxTrials = goal;
-    SCENARIO.numCorrect = goal;
+    SCENARIO.QINPUTS[0] = new Array(N).fill(0);   // A = |0>  (queue value 0)
+    SCENARIO.QINPUTS[1] = new Array(N).fill(8);   // B = |1>  (queue value 8 = pi)
+    SCENARIO.QINPUTS[2] = [];
+    SCENARIO.device = goal; SCENARIO.maxTrials = goal; SCENARIO.numCorrect = goal;
+    SCENARIO.channelsCol = [1, 1, 1, 1, 0, 0];
+    SCENARIO.channelsDir = [-1, -1, -1, -1, 0, 0];
+    FIELD.channelsDir = [-1, -1, -1, -1, 0, 0];
+    for (var r = 0; r < 6; r++) FIELD.channels[r] = Math.round((SCENARIO.channelsDir[r] + 1) / 2);
+
+    // Clean board: two straight channels on rows 5 and 8.
+    var tiles = new Array(C * R).fill(-1);
+    [5, 8].forEach(function (row) {
+      for (var c = 0; c < C; c++) tiles[row * C + c] = PLAIN;
+      tiles[row * C + 0] = QCTRL_TILE;            // feeder seat
+      tiles[row * C + 9] = 68;                    // X gate seat
+      tiles[row * C + (C - 1)] = QCTRL_TILE;      // qCompare seat
+    });
+    tiles[8 * C + 1] = 68;                        // B input-prep seat (|0>->|1>)
+    var gates = [
+      [0, 5, "qCreate", "free", 0, 0, 0, 0, N],            // feed A = |0>
+      [0, 8, "qCreate", "free", 0, 0, 0, 0, N],            // feed B = |0> ...
+      [1, 8, "qFlip", "free", 0, PI / 2, 0, 0, -1],        // ... then X so B enters as |1>
+      [9, 5, "qFlip", "free", 0, PI / 2, 0, 0, -1],        // X (prefilled solution): A |0>->|1> = C
+      [9, 8, "qFlip", "free", 0, PI / 2, 0, 0, -1],        // X (prefilled solution): B |1>->|0> = D
+      [C - 1, 5, "qCompare", "free", 0, 0, 0, 0, -1],      // output C
+      [C - 1, 8, "qCompare", "free", 0, 0, 0, 0, -1],      // output D
+    ];
+    // Output targets as halt-ghost qubits: C=|1> (angle pi), D=|0> (angle 0).
+    var qubits = [
+      [C - 1, 5, 0, 2, "halt", PI, true],
+      [C - 1, 8, 0, 2, "halt", 0, true],
+    ];
+
+    IBOARD._gateList = []; IBOARD._qubitList = []; IBOARD._bitList = [];
+    IBOARD._tiles = tiles;
+    IBOARD.setAllBits([], JSON.parse(JSON.stringify(qubits)), []);
+    IBOARD.setAllGates(JSON.parse(JSON.stringify(gates)));
+    LevelRefresh(SCENARIO.name, IBOARD);
+    try {
+      if (CANV.scenarioOverlay && CANV.scenarioOverlay.clear) CANV.scenarioOverlay.clear();
+      Overlay.createInstruct(CANV.scenarioOverlay.ctx, CANV.scenarioOverlay.w0, CANV.scenarioOverlay.h0);
+      if (CANV.scenarioMask && CANV.scenarioMask.clear) CANV.scenarioMask.clear();
+      Overlay.createInstruct(CANV.scenarioMask.ctx, CANV.scenarioMask.w0, CANV.scenarioMask.h0, true);
+    } catch (e) { /* overlay not ready */ }
     if (typeof UNDOREDO !== "undefined" && UNDOREDO.reset) UNDOREDO.reset();
     STATE.mode = "constructing";
   }
