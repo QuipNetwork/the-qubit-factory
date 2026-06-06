@@ -303,24 +303,33 @@
     if (typeof UNDOREDO !== "undefined" && UNDOREDO.reset) UNDOREDO.reset();
     STATE.mode = "constructing";
 
-    // The palette buttons are greyed from SCENARIO.menuGrey during the menu's
-    // slide-in, which runs before (and is not repeated after) this loader sets
-    // menuGrey — so they keep quant1's default (only 3 qubit gates enabled).
-    // Re-assert "all enabled" on the built buttons; retry briefly because the
-    // menu builds lazily on the first draws.
+    // The gate-palette icons are baked once by Menu.initialize() from
+    // SCENARIO.menuGrey. That ran during InitScenario.load with quant1's default
+    // (most gates greyed), before this loader set menuGrey to all-zeros, and is
+    // not repeated — so the palette keeps quant1's greyed look even though the
+    // buttons are functionally enabled. Rebuild the menu once (re-bakes every gate
+    // as enabled) and also clear the isGrey flags; retry briefly because the menu
+    // builds lazily on the first draws and the engine may re-init it late.
+    var didRebuildMenu = false;
     var enableAllGates = function () {
       try {
+        SCENARIO.menuGrey = [[0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0]];
+        var built = typeof MENU !== "undefined" && MENU.buttons && MENU.buttons.length;
+        if (built && !didRebuildMenu && typeof Menu !== "undefined" && Menu.initialize) {
+          Menu.initialize();
+          didRebuildMenu = true;
+        }
         if (typeof MENU !== "undefined" && MENU.buttons) {
           for (var i = 0; i < MENU.buttons.length; i++) MENU.buttons[i].isGrey = 0;
         }
-      } catch (e) { /* menu not built yet */ }
+      } catch (e) { /* menu not ready */ }
     };
     enableAllGates();
     var gTries = 0;
     var gTimer = setInterval(function () {
       enableAllGates();
-      if (++gTries > 15) clearInterval(gTimer);
-    }, 200);
+      if (++gTries > 12) clearInterval(gTimer);
+    }, 250);
   }
 
   // ---- URL parsing ----
