@@ -1,4 +1,8 @@
 /*
+ * Copyright 2026 Quip Network
+ * SPDX-License-Identifier: Apache-2.0
+ */
+/*
  * Qubit Factory Link — open a generated circuit from the URL.
  *
  * Reads `#seed=<hex>` or `#qasm=<base64url QASM>` from the page URL and builds a
