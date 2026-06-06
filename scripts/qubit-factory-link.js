@@ -2,13 +2,13 @@
  * Qubit Factory Link — open a generated circuit from the URL.
  *
  * Reads `#seed=<hex>` or `#qasm=<base64url QASM>` from the page URL and builds a
- * single playable level on the factory board:
+ * single playable level on the factory board: the seed's 6-qubit circuit laid on
+ * 6 contiguous rows (4-9), matching the certificate diagram.
  *   - Rows 5 and 8 are the scored channels: A=|0> -> C and B=|1> -> D, collected
- *     by qCompare; pass them through unchanged (the straight wire already solves
- *     it) to win.
- *   - Every other visible row carries the seed's generated circuit: a qCreate
- *     feeder -> the seed's gates -> a trash collector. These run alongside the
- *     scored channels (filler), filling the board.
+ *     by qCompare. The circuit's gates land on them too, so the output is wrong
+ *     until the player rewires it — fixing the circuit is the game.
+ *   - Rows 4,6,7,9 are filler: a qCreate feeder -> the seed's gates -> a trash
+ *     collector. CX/CZ/SWAP interactions connect adjacent rows.
  *
  * There are no mode/score URL params — the behavior and goal are fixed defaults.
  * Optional `&pattern=&palette=&sig=&rares=` enrich the side panel with NFT-trait
@@ -93,12 +93,13 @@
   var GEN_MOMENTS = 16;     // generated circuit depth (placement caps it to the cols)
   // Camera focus that yields cameraX=cameraY=0 (board centered in the play frame).
   var CAM_FX = 6.5, CAM_FY = 2.5;
-  // The seed circuit fills every visible interior row (1-12). Rows 5,8 are the
-  // scored A/B -> C/D channels: the circuit's single-qubit gates land on them too,
-  // so the output is wrong until the player fixes the circuit (that's the game).
-  // Two-qubit interactions are kept off the scored rows so they stay fixable.
-  // Rows 0,13 remain quant1's queue-feeder corners.
-  var CIRCUIT_ROWS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
+  // The seed circuit fills 6 contiguous rows (4-9), matching the 6-qubit art.
+  // Rows 5,8 are the scored A/B -> C/D channels (fed by the queue, collected by
+  // qCompare); rows 4,6,7,9 are filler (qCreate feeder -> gates -> trash). The
+  // full circuit lands on every line, including CX/CZ/SWAP interactions between
+  // adjacent rows — the output is wrong until the player fixes it (that's the
+  // game). Rows 0-3,10-13 stay empty / quant1's queue-feeder corners.
+  var CIRCUIT_ROWS = [4, 5, 6, 7, 8, 9];
   var isScored = function (row) { return row === 5 || row === 8; };
 
   // Build the unified level into the live board.
@@ -144,18 +145,16 @@
       }
     }
 
-    // Place the seed circuit. Single-qubit gates land on every line (the scored
-    // ones too — the player fixes those). Two-qubit interactions go only between
-    // adjacent NON-scored lines, so the A/B->C/D path stays solvable.
+    // Place the seed circuit exactly as drawn: single-qubit gates on every line
+    // and CX/CZ/SWAP interactions between any adjacent rows (the contiguous 4-9
+    // layout makes circuit-adjacent qubits board-adjacent).
     var cursor = new Array(n).fill(0);
     var nextCol = function (qs) {
       var m = 0;
       for (var i = 0; i < qs.length; i++) m = Math.max(m, cursor[qs[i]]);
       return m + 1;
     };
-    var adjacentFiller = function (a, b) {
-      return Math.abs(rowOf(a) - rowOf(b)) === 1 && !isScored(rowOf(a)) && !isScored(rowOf(b));
-    };
+    var boardAdjacent = function (a, b) { return Math.abs(rowOf(a) - rowOf(b)) === 1; };
     var placeSingle = function (col, q, label, angle) {
       var enc = singleEnc(label);
       var rot = (typeof angle === "number") ? angle : enc.rot;
@@ -182,13 +181,13 @@
         placeSingle(col, q0, g.label, g.angle);
         cursor[q0] = col; nSingle++; depth = Math.max(depth, col);
       } else if (g.type === "cx" || g.type === "cz") {
-        if (!adjacentFiller(q0, q1)) continue;
+        if (!boardAdjacent(q0, q1)) continue;
         var colc = nextCol([q0, q1]);
         if (colc > LAST_GATE_COL) continue;
         placeControlled(colc, q0, q1, "qFlip", g.type === "cx" ? PI / 2 : 0);
         cursor[q0] = cursor[q1] = colc; nTwo++; depth = Math.max(depth, colc);
       } else if (g.type === "swap") {
-        if (!adjacentFiller(q0, q1)) continue;
+        if (!boardAdjacent(q0, q1)) continue;
         var col0 = nextCol([q0, q1]);
         if (col0 + 2 > LAST_GATE_COL) continue;
         placeControlled(col0, q0, q1, "qFlip", PI / 2);
