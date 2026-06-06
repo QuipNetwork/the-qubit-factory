@@ -220,6 +220,25 @@
     STATE.mode = "constructing";
   }
 
+  // Scored level: piggyback quant1's fully-wired machinery (input queues, output
+  // targets, scoring, win). quant1 inverts A->C and B->D, so inputs A=|0>, B=|1>
+  // give targets C=|1>, D=|0>. Override the inputs and the win count, and prefill
+  // a circuit (default: quant1's own inversion solution, which wins).
+  function loadScoredLevel(spec, goal) {
+    SCENARIO.whichOne = "quant1";
+    // solution=true prefills quant1's inversion circuit so there is something to run.
+    InitScenario.load("quant1", true);
+    var N = Math.max(goal * 3, 60);
+    // A = |0> (queue value 0), B = |1> (queue value 8 = angle pi).
+    SCENARIO.QINPUTS[0] = new Array(N).fill(0);
+    SCENARIO.QINPUTS[1] = new Array(N).fill(8);
+    SCENARIO.device = goal;
+    SCENARIO.maxTrials = goal;
+    SCENARIO.numCorrect = goal;
+    if (typeof UNDOREDO !== "undefined" && UNDOREDO.reset) UNDOREDO.reset();
+    STATE.mode = "constructing";
+  }
+
   // ---- URL parsing ----
   function readParam(name) {
     var hash = location.hash.replace(/^#/, "");
@@ -329,14 +348,43 @@
     } catch (e) { /* panel not ready */ }
   }
 
+  // Info panel for the scored (quant1-piggyback) level.
+  function setScoredPanel(spec, goal) {
+    var info = [];
+    if (spec.mode === "seed") info.push("• Seed: " + spec.seedHex.slice(0, 10) + "…" + spec.seedHex.slice(-6));
+    var pat = readParam("pattern"), pal = readParam("palette"), sig = readParam("sig");
+    if (pat) info.push("• Pattern: " + pat);
+    if (pal) info.push("• Palette: " + pal);
+    if (sig) info.push("• Signature: #" + sig.replace(/^#/, ""));
+    info.push("• Inputs: A=|0>, B=|1>");
+    info.push("• Targets: C=|1>, D=|0> (invert)");
+    info.push("• Win: " + goal + " correct on each");
+    try {
+      SCENARIO.title = "Quantum Echo";
+      SCENARIO.info = info;
+      if (typeof Overlay !== "undefined" && typeof CANV !== "undefined" && CANV.scenario) {
+        if (CANV.scenario.clear) CANV.scenario.clear();
+        Overlay.createScenarioNew(CANV.scenario.ctx, CANV.scenario.w0, CANV.scenario.h0);
+      }
+    } catch (e) { /* panel not ready */ }
+  }
+
   function tryLoad() {
     var spec = circuitFromUrl();
     if (!spec) return;
     try {
-      var model = buildBoardModel(spec.gates, spec.nQubits);
-      installCircuit(model);
-      setPanel(spec, model);
-      message("Circuit loaded! Press play.");
+      var mode = (readParam("mode") || "play").toLowerCase();
+      if (mode === "sandbox") {
+        var model = buildBoardModel(spec.gates, spec.nQubits);
+        installCircuit(model);
+        setPanel(spec, model);
+        message("Circuit loaded! Press play.");
+      } else {
+        var goal = parseInt(readParam("goal") || "20", 10) || 20;
+        loadScoredLevel(spec, goal);
+        setScoredPanel(spec, goal);
+        message("Press play: invert A=0 -> C=1 and B=1 -> D=0.");
+      }
       if (typeof SFX !== "undefined" && SFX.click2) SFX.click2.play();
     } catch (e) {
       message("Could not load circuit from link.");
